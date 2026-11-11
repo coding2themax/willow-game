@@ -1,0 +1,1266 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lone Cowboy</title>
+<meta name="description" content="A four-chapter web game after Will James's 1930 life story, Lone Cowboy.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Rye&family=IM+Fell+English:ital@0;1&display=swap">
+<style>
+/* Layout: one letterboxed canvas, centered on a dark saddle-leather ground. */
+:root {
+  --bg: #140d08;
+  --ink: #f1e2c4;
+  --display: "Rye", Georgia, serif;
+  --body: "IM Fell English", Georgia, serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+canvas { display: block; touch-action: none; outline: none; }
+#rot {
+  display: none;
+  position: fixed;
+  left: 0; right: 0;
+  bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  padding: 0 16px;
+  text-align: center;
+  font: italic 16px var(--body);
+  color: var(--ink);
+  opacity: .75;
+  pointer-events: none;
+}
+@media (orientation: portrait) and (pointer: coarse) { #rot { display: block; } }
+</style>
+</head>
+<body>
+<canvas id="c" tabindex="0" aria-label="Lone Cowboy game"></canvas>
+<div id="rot">Turn your phone sideways for a wider trail.</div>
+<script>
+'use strict';
+/* ===================== LONE COWBOY =====================
+   A small game after "Lone Cowboy: My Life" by Will James (1930).
+   Chapters: trapline runner, horseback runner, bronc riding, roundup. */
+
+const W = 960, H = 540, GY = 440;
+const FD = '"Rye", Georgia, serif', FB = '"IM Fell English", Georgia, serif';
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let S = 1;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const bw = Math.min(innerWidth, document.body.clientWidth || innerWidth);
+  const bh = Math.min(innerHeight, document.body.clientHeight || innerHeight);
+  const s = Math.min(bw / W, bh / H);
+  cv.style.width = Math.floor(W * s) + 'px';
+  cv.style.height = Math.floor(H * s) + 'px';
+  cv.width = Math.floor(W * s * dpr);
+  cv.height = Math.floor(H * s * dpr);
+  S = cv.width / W;
+}
+addEventListener('resize', resize);
+resize();
+
+/* ---------- helpers ---------- */
+const rand = (a, b) => a + Math.random() * (b - a);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const pick = a => a[Math.floor(Math.random() * a.length)];
+function rgb(c) {
+  if (c[0] === '#') return [1, 3, 5].map(i => parseInt(c.slice(i, i + 2), 16));
+  return c.match(/[\d.]+/g).slice(0, 3).map(Number);
+}
+function mix(a, b, t) {
+  const A = rgb(a), B = rgb(b);
+  return 'rgb(' + A.map((v, i) => Math.round(v + (B[i] - v) * t)).join(',') + ')';
+}
+function alpha(c, a) { const A = rgb(c); return `rgba(${A[0]},${A[1]},${A[2]},${a})`; }
+function line(x1, y1, x2, y2) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+function ell(x, y, rx, ry, rot = 0) { ctx.beginPath(); ctx.ellipse(x, y, rx, ry, rot, 0, Math.PI * 2); ctx.fill(); }
+function circ(x, y, r) { ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill(); }
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function txt(s, x, y, size, font = FB, color = '#f1e2c4', align = 'left', shadow = true) {
+  ctx.font = `${size}px ${font}`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'alphabetic';
+  if (shadow) { ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillText(s, x + 1.5, y + 2); }
+  ctx.fillStyle = color;
+  ctx.fillText(s, x, y);
+}
+function wrap(s, maxW, size, font = FB) {
+  ctx.font = `${size}px ${font}`;
+  const words = s.split(' '), out = [];
+  let ln = '';
+  for (const w of words) {
+    const t = ln ? ln + ' ' + w : w;
+    if (ctx.measureText(t).width > maxW && ln) { out.push(ln); ln = w; } else ln = t;
+  }
+  if (ln) out.push(ln);
+  return out;
+}
+function hillY(x, seed, amp) {
+  return Math.sin(x * 0.0035 + seed) * amp * 0.6 + Math.sin(x * 0.011 + seed * 2.3) * amp * 0.3 + Math.sin(x * 0.027 + seed * 3.1) * amp * 0.1;
+}
+function hills(off, base, amp, seed, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (let x = 0; x <= W + 8; x += 8) ctx.lineTo(x, base - hillY(x + off, seed, amp));
+  ctx.lineTo(W, H);
+  ctx.fill();
+}
+function sky(top, bot) {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, top); g.addColorStop(1, bot);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+function vignette(a = 0.55) {
+  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.35, W / 2, H / 2, H * 0.95);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, `rgba(10,5,2,${a})`);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+}
+
+/* ---------- input ---------- */
+const keys = {};
+let pressed = {};
+const ptr = { x: 0, y: 0, down: false, tap: false };
+const touches = new Map();
+const GAME_KEYS = ['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+addEventListener('keydown', e => {
+  if (!keys[e.code]) pressed[e.code] = true;
+  keys[e.code] = true;
+  if (GAME_KEYS.includes(e.code)) e.preventDefault();
+  Snd.unlock();
+});
+addEventListener('keyup', e => { keys[e.code] = false; });
+function toLocal(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+}
+cv.addEventListener('pointerdown', e => {
+  const p = toLocal(e);
+  touches.set(e.pointerId, p);
+  ptr.x = p.x; ptr.y = p.y; ptr.down = true; ptr.tap = true;
+  Snd.unlock();
+  try { cv.setPointerCapture(e.pointerId); } catch (_) {}
+  cv.focus();
+  e.preventDefault();
+});
+cv.addEventListener('pointermove', e => {
+  const p = toLocal(e);
+  if (touches.has(e.pointerId)) touches.set(e.pointerId, p);
+  ptr.x = p.x; ptr.y = p.y;
+});
+function endPtr(e) { touches.delete(e.pointerId); ptr.down = touches.size > 0; }
+cv.addEventListener('pointerup', endPtr);
+cv.addEventListener('pointercancel', endPtr);
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; touches.clear(); ptr.down = false; });
+
+const act = () => pressed.Space || pressed.ArrowUp || pressed.KeyW || pressed.Enter || ptr.tap;
+const actHeld = () => keys.Space || keys.ArrowUp || keys.KeyW || ptr.down;
+function sideHeld() {
+  let l = keys.ArrowLeft || keys.KeyA, r = keys.ArrowRight || keys.KeyD;
+  for (const p of touches.values()) { if (p.x < W / 2) l = true; else r = true; }
+  return (r ? 1 : 0) - (l ? 1 : 0);
+}
+
+/* ---------- sound ---------- */
+const Snd = {
+  ac: null, muted: false,
+  unlock() {
+    if (!this.ac) { try { this.ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (_) {} }
+    if (this.ac && this.ac.state === 'suspended') this.ac.resume();
+  },
+  tone(f, d, type = 'square', v = 0.05, f2 = 0, delay = 0) {
+    if (this.muted || !this.ac) return;
+    const c = this.ac, t = c.currentTime + delay;
+    const o = c.createOscillator(), g = c.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(g).connect(c.destination); o.start(t); o.stop(t + d + 0.02);
+  },
+  noise(d, v = 0.08, freq = 800, delay = 0) {
+    if (this.muted || !this.ac) return;
+    const c = this.ac, t = c.currentTime + delay;
+    const len = Math.floor(c.sampleRate * d), buf = c.createBuffer(1, len, c.sampleRate), data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    src.buffer = buf; f.type = 'lowpass'; f.frequency.value = freq; g.gain.value = v;
+    src.connect(f).connect(g).connect(c.destination); src.start(t);
+  },
+  tune(notes, step = 0.14, type = 'triangle', v = 0.05) {
+    notes.forEach((n, i) => { if (n) this.tone(n, step * 1.6, type, v, 0, i * step); });
+  }
+};
+const sfx = {
+  jump: () => Snd.tone(300, 0.16, 'triangle', 0.06, 520),
+  pick: () => { Snd.tone(880, 0.08, 'square', 0.035); Snd.tone(1320, 0.14, 'square', 0.035, 0, 0.07); },
+  hit: () => { Snd.noise(0.3, 0.2, 500); Snd.tone(140, 0.25, 'sawtooth', 0.05, 70); },
+  hoof: () => Snd.noise(0.05, 0.05, 260),
+  thud: () => Snd.noise(0.4, 0.3, 300),
+  whistle: () => { Snd.tone(1900, 0.2, 'sine', 0.06, 2300); Snd.tone(2300, 0.35, 'sine', 0.06, 1800, 0.22); },
+  moo: () => Snd.tone(150, 0.55, 'sawtooth', 0.03, 100),
+  win: () => Snd.tune([392, 494, 587, 784, 0, 587, 784], 0.12),
+  lose: () => Snd.tune([392, 349, 311, 262], 0.18, 'triangle', 0.05),
+  page: () => Snd.noise(0.12, 0.05, 2500)
+};
+
+/* ---------- save ---------- */
+const STATS_ZERO = () => ({ pelts: 0, peltsMax: 0, canteens: 0, hits: 0, throws: 0, bronc: 0, cattle: 0, timeLeft: 0 });
+let STATS = STATS_ZERO();
+function save(step) { try { localStorage.setItem('lonecowboy', JSON.stringify({ step, STATS })); } catch (_) {} }
+function load() { try { return JSON.parse(localStorage.getItem('lonecowboy')); } catch (_) { return null; } }
+function clearSave() { try { localStorage.removeItem('lonecowboy'); } catch (_) {} }
+
+/* ======================= FIGURES ======================= */
+function leg(hx, hy, a1, a2, l1, l2, w) {
+  const kx = hx + Math.sin(a1) * l1, ky = hy + Math.cos(a1) * l1;
+  const fx = kx + Math.sin(a2) * l2, fy = ky + Math.cos(a2) * l2;
+  ctx.lineWidth = w; line(hx, hy, kx, ky);
+  ctx.lineWidth = w * 0.72; line(kx, ky, fx, fy);
+  ctx.lineWidth = w * 0.95; line(fx - 1, fy, fx + 2.5, fy);
+}
+
+// Rider at the current origin (= the saddle seat), facing right.
+function drawRider(ink, lean = 0, armUp = false, legs = true) {
+  ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineCap = 'round';
+  if (legs) {
+    ctx.lineWidth = 6; line(0, 0, 10, 12);
+    ctx.lineWidth = 5; line(10, 12, 5, 28);
+    ctx.lineWidth = 6; line(4, 29, 10, 29);
+  }
+  ctx.save();
+  ctx.rotate(lean);
+  ctx.lineWidth = 11; line(0, -2, 2, -26);                 // torso
+  ctx.lineWidth = 4;
+  if (armUp) { line(1, -24, -10, -38); line(-10, -38, -14, -52); }
+  else { line(2, -24, 12, -14); line(12, -14, 22, -16); }
+  line(3, -24, 14, -16);                                   // rein arm
+  circ(3, -33, 6.2);                                       // head
+  ell(3, -38, 12, 2.6);                                    // hat brim
+  ctx.beginPath();                                         // hat crown with crease
+  ctx.moveTo(-3.5, -38); ctx.lineTo(-3, -46); ctx.lineTo(1, -44); ctx.lineTo(3, -47); ctx.lineTo(5, -44); ctx.lineTo(9, -46); ctx.lineTo(9.5, -38);
+  ctx.fill();
+  ctx.lineWidth = 2; line(-1, -20, -7, -14);                // neckerchief flap
+  ctx.restore();
+}
+
+/* Horse silhouette. (x,y) is the ground under the horse's middle; faces right.
+   o.pose: 'gallop' | 'stand' | 'buck' | 'walk'. */
+function drawHorse(x, y, sc, ph, o = {}) {
+  const ink = o.ink || '#24150c';
+  ctx.save();
+  ctx.translate(x, y); ctx.scale(sc, sc);
+  ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  const pose = o.pose || 'gallop';
+  const far = mix(ink, o.farTint || '#6b5a48', 0.28);
+  const legsFor = (front, near) => {
+    const hx = front ? 26 : -30, hy = -50;
+    let a1 = 0.04, a2 = 0;
+    if (pose === 'gallop' || pose === 'walk') {
+      const k = pose === 'walk' ? 0.45 : 1;
+      const p = ph + (front ? 0 : Math.PI) + (near ? 0.55 : 0);
+      a1 = Math.sin(p) * 0.6 * k;
+      if (front) a2 = a1 - Math.max(0, Math.sin(p + 1.3)) * 1.2 * k;
+      else a2 = a1 + Math.max(0, Math.sin(p - 1.1)) * 0.6 * k - 0.15 * k;
+    } else if (pose === 'buck') {
+      const kk = o.kick || 0;
+      if (front) { a1 = 0.1 + 0.55 * kk + (near ? 0.12 : 0); a2 = a1 - 0.9 * kk; }
+      else { a1 = -0.15 - 0.6 * kk - (near ? 0.1 : 0); a2 = a1 - 0.35 * kk; }
+    }
+    leg(hx, hy, a1, a2, 25, 26, 7);
+  };
+  // far legs
+  ctx.strokeStyle = far; ctx.fillStyle = far;
+  legsFor(true, false); legsFor(false, false);
+  ctx.strokeStyle = ink; ctx.fillStyle = ink;
+  // tail
+  const tw = Math.sin(ph * 1.3) * 6 + (o.tailLift || 0);
+  ctx.lineWidth = 7;
+  ctx.beginPath(); ctx.moveTo(-42, -66);
+  ctx.quadraticCurveTo(-60, -60 - tw, -66, -32 - tw * 0.6); ctx.stroke();
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(-50, -62); ctx.quadraticCurveTo(-68, -54 - tw, -72, -30 - tw); ctx.stroke();
+  // body
+  ell(0, -58, 38, 15.5);
+  ell(26, -61, 16, 15);
+  ell(-28, -61, 17, 16);
+  // neck + head
+  const nod = pose === 'gallop' ? Math.sin(ph * 2) * 2 : 0;
+  ctx.beginPath();
+  ctx.moveTo(22, -74); ctx.lineTo(44, -102 + nod); ctx.lineTo(57, -96 + nod); ctx.lineTo(42, -58); ctx.closePath(); ctx.fill();
+  ctx.save(); ctx.translate(58, -91 + nod); ctx.rotate(0.65); ell(2, 0, 15, 7); ctx.restore();
+  ctx.beginPath(); ctx.moveTo(45, -103 + nod); ctx.lineTo(47, -114 + nod); ctx.lineTo(52, -101 + nod); ctx.fill();
+  ctx.lineWidth = 3;                                          // mane
+  for (let i = 0; i < 5; i++) {
+    const t = i / 4, mx = lerp(24, 44, t), my = lerp(-74, -102 + nod, t);
+    line(mx, my, mx - 7 - Math.sin(ph * 2 + i) * 2, my + 4);
+  }
+  // near legs
+  legsFor(true, true); legsFor(false, true);
+  if (o.saddle !== false && o.rider !== false) {
+    ctx.fillStyle = mix(ink, '#000000', 0.3);
+    ell(-4, -73, 14, 5);
+  }
+  if (o.rider !== false) {
+    ctx.save(); ctx.translate(-4, -76);
+    drawRider(ink, o.lean || 0, o.armUp);
+    ctx.restore();
+  }
+  ctx.restore();
+}
+
+// Kid on snowshoes. (x,y) = ground.
+function drawWalker(x, y, ph, ink, air = false) {
+  ctx.save(); ctx.translate(x, y);
+  ctx.strokeStyle = ink; ctx.fillStyle = ink; ctx.lineCap = 'round';
+  const sw = air ? 0.5 : Math.sin(ph) * 0.55;
+  const lg = (s) => {
+    const a = s, kx = Math.sin(a) * 15, ky = -30 + Math.cos(a) * 15;
+    const fx = kx + Math.sin(a * 0.4) * 14, fy = ky + 14;
+    ctx.lineWidth = 6; line(0, -30, kx, ky); line(kx, ky, fx, fy);
+    ctx.save(); ctx.fillStyle = mix(ink, '#8a6a4a', 0.4); ell(fx + 2, fy + 1, 11, 3); ctx.restore();
+  };
+  ctx.globalAlpha = 0.8; lg(-sw); ctx.globalAlpha = 1; lg(sw);
+  // coat
+  ctx.beginPath(); ctx.moveTo(-8, -28); ctx.lineTo(9, -28); ctx.lineTo(7, -56); ctx.lineTo(-6, -56); ctx.closePath(); ctx.fill();
+  // pack
+  ctx.fillStyle = mix(ink, '#7a5a3a', 0.45); rrect(-17, -56, 11, 22, 3); ctx.fill();
+  ctx.fillStyle = ink;
+  // arms
+  ctx.lineWidth = 4.5;
+  line(2, -52, 2 + Math.sin(-sw) * 12, -40); line(2 + Math.sin(-sw) * 12, -40, 6 + Math.sin(-sw) * 14, -32);
+  // head + fur cap
+  circ(2, -63, 6.5);
+  ctx.fillStyle = mix(ink, '#9a7b5a', 0.35); ell(1, -69, 8, 4.5);
+  ctx.restore();
+}
+
+function drawPine(x, base, h, color) {
+  ctx.fillStyle = color;
+  ctx.fillRect(x - 2, base - h * 0.15, 4, h * 0.15);
+  for (let i = 0; i < 4; i++) {
+    const t = i / 4, w = h * (0.34 - t * 0.07), y0 = base - h * 0.12 - t * h * 0.25;
+    ctx.beginPath(); ctx.moveTo(x - w, y0); ctx.lineTo(x, y0 - h * 0.42); ctx.lineTo(x + w, y0); ctx.fill();
+  }
+}
+
+function drawCabin(x, y, ink, lit = true, t = 0) {
+  ctx.fillStyle = ink;
+  ctx.fillRect(x - 70, y - 70, 140, 70);
+  ctx.beginPath(); ctx.moveTo(x - 86, y - 66); ctx.lineTo(x, y - 122); ctx.lineTo(x + 86, y - 66); ctx.fill();
+  ctx.fillRect(x + 30, y - 128, 14, 40); // chimney
+  ctx.fillStyle = '#eef3fa'; ctx.beginPath(); ctx.moveTo(x - 90, y - 64); ctx.lineTo(x, y - 124); ctx.lineTo(x + 90, y - 64); ctx.lineTo(x + 80, y - 66); ctx.lineTo(x, y - 116); ctx.lineTo(x - 80, y - 66); ctx.fill();
+  if (lit) {
+    ctx.fillStyle = '#ffc860'; ctx.fillRect(x - 46, y - 50, 26, 22);
+    ctx.fillStyle = ink; ctx.fillRect(x - 34, y - 50, 2, 22); ctx.fillRect(x - 46, y - 40, 26, 2);
+    const g = ctx.createRadialGradient(x - 33, y - 39, 2, x - 33, y - 39, 70);
+    g.addColorStop(0, 'rgba(255,200,96,.35)'); g.addColorStop(1, 'rgba(255,200,96,0)');
+    ctx.fillStyle = g; ctx.fillRect(x - 110, y - 110, 160, 140);
+  }
+  ctx.fillStyle = mix(ink, '#000', 0.2); ctx.fillRect(x + 10, y - 46, 22, 46);
+  for (let i = 0; i < 5; i++) {
+    const p = ((t * 0.35 + i / 5) % 1);
+    ctx.fillStyle = `rgba(220,220,235,${0.35 * (1 - p)})`;
+    circ(x + 37 + Math.sin(p * 6 + i) * 8 + p * 20, y - 134 - p * 70, 6 + p * 12);
+  }
+}
+
+function drawCowSide(x, y, sc, ink, grazing = false) {
+  ctx.save(); ctx.translate(x, y); ctx.scale(sc, sc); ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineCap = 'round';
+  ctx.lineWidth = 5;
+  line(-18, -22, -19, 0); line(-12, -22, -11, 0); line(14, -22, 15, 0); line(20, -22, 19, 0);
+  ell(0, -30, 26, 12);
+  const hy = grazing ? -10 : -34;
+  ctx.beginPath(); ctx.moveTo(18, -38); ctx.lineTo(32, hy - 4); ctx.lineTo(38, hy + 6); ctx.lineTo(20, -22); ctx.fill();
+  ell(35, hy + 3, 7, 5, 0.6);
+  ctx.lineWidth = 2; line(31, hy - 3, 26, hy - 8); line(33, hy - 3, 40, hy - 8);
+  line(-25, -34, -30, -14);
+  ctx.restore();
+}
+
+function drawWagon(x, y, ink) {
+  ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.lineWidth = 3;
+  ctx.fillRect(x - 60, y - 34, 120, 14);
+  ctx.beginPath(); ctx.moveTo(x - 58, y - 34);
+  for (let i = 0; i <= 3; i++) { const cx = x - 58 + i * 38.6; ctx.quadraticCurveTo(cx - 19, y - 92, cx, y - 34); }
+  ctx.fillStyle = mix(ink, '#ffffff', 0.12); ctx.fill(); ctx.fillStyle = ink;
+  for (const wx of [x - 40, x + 40]) {
+    ctx.beginPath(); ctx.arc(wx, y - 14, 14, 0, Math.PI * 2); ctx.stroke();
+    for (let a = 0; a < 6; a++) line(wx, y - 14, wx + Math.cos(a) * 14, y - 14 + Math.sin(a) * 14);
+  }
+  ctx.lineWidth = 4; line(x + 60, y - 22, x + 100, y - 14);
+}
+
+function drawFire(x, y, t) {
+  const g = ctx.createRadialGradient(x, y - 10, 2, x, y - 10, 90);
+  g.addColorStop(0, 'rgba(255,170,60,.45)'); g.addColorStop(1, 'rgba(255,170,60,0)');
+  ctx.fillStyle = g; ctx.fillRect(x - 90, y - 100, 180, 120);
+  for (let i = 0; i < 3; i++) {
+    const f = Math.sin(t * 9 + i * 2) * 3;
+    ctx.fillStyle = ['#ff9a2e', '#ffcf5a', '#fff2b0'][i];
+    ctx.beginPath(); ctx.moveTo(x - 12 + i * 4, y); ctx.quadraticCurveTo(x - 6 + f, y - 30 + i * 8, x, y - 34 + i * 9 + f); ctx.quadraticCurveTo(x + 6 + f, y - 28 + i * 8, x + 12 - i * 4, y); ctx.fill();
+  }
+  ctx.strokeStyle = '#2a170c'; ctx.lineWidth = 5; line(x - 16, y, x + 16, y - 4); line(x - 14, y - 4, x + 18, y);
+}
+
+function horseshoe(x, y, on) {
+  ctx.strokeStyle = on ? '#e8d3a0' : 'rgba(232,211,160,.25)';
+  ctx.lineWidth = 4.5; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(x, y, 8, 0.05 * Math.PI, 0.95 * Math.PI); ctx.stroke();
+  line(x - 8, y, x - 8, y - 5); line(x + 8, y, x + 8, y - 5);
+}
+
+/* ======================= SCENES ======================= */
+let scene = null, step = 0, fade = 1;
+function go(s) { scene = s; fade = 1; }
+
+const STORY = {
+  prologue: {
+    kicker: 'Lone Cowboy · My Life · 1930', title: 'Born on the Range', art: 'prologue',
+    paras: [
+      'Will James told it this way. He was born in a covered wagon in the Montana cow country, and before he was four years old both his folks were gone.',
+      'An old French-Canadian trapper named Jean Beaupré took the boy in. The kid called him Bopy. They lived on horseback and in trapping camps, drifting far up into the North.',
+      'Bopy taught him to ride, to read sign in the snow, and to draw. The kid drew horses on anything that would hold a pencil mark.'
+    ]
+  },
+  ch1: {
+    kicker: 'Chapter One', title: "Bopy's Trapline", art: 'cabin',
+    paras: [
+      'Winters in the North were long and white. While Bopy worked the far end of the line, the kid ran the near traps on snowshoes, with the light going fast.',
+      'Gather the pelts and make it back to the cabin before dark. Watch for deadfalls and stumps under the snow.'
+    ],
+    controls: 'Space, Up or tap to jump. Hold it for a higher leap.'
+  },
+  ch2: {
+    kicker: 'Chapter Two', title: 'Drifting South', art: 'river',
+    paras: [
+      'One spring Bopy went out across the river ice and never came back. The kid was barely in his teens, alone, with a horse, a saddle and a stub of pencil.',
+      'He turned south toward the cow country, riding long dry miles between water holes. Clear the sagebrush, fences and badger holes, and keep your canteen from running dry.'
+    ],
+    controls: 'Space, Up or tap to jump. Grab canteens to keep your water up.'
+  },
+  ch3: {
+    kicker: 'Chapter Three', title: 'The Rough String', art: 'corral',
+    paras: [
+      'He hired on with a cow outfit as horse wrangler, the lowest job on the crew. But the kid could stick to a horse, and soon the boss handed him the rough string: the broncs nobody else would ride.',
+      'Nod for the gate, then keep your balance until the whistle blows. Ride all three.'
+    ],
+    controls: 'Left/Right or A/D, or hold the left or right side of the screen. Lean against the buck.'
+  },
+  ch4: {
+    kicker: 'Chapter Four', title: 'Spring Roundup', art: 'herd',
+    paras: [
+      'Come spring, the outfit\'s cattle were scattered over a hundred miles of hills and coulees. Every rider worked the roundup, gathering strays for the branding.',
+      'Haze at least eight head into the corral before sundown. Cattle move away from your horse, so circle wide and come at them from the far side.'
+    ],
+    controls: 'Arrow keys or WASD, or touch and hold where you want to ride.'
+  }
+};
+
+/* ---------- art for story cards ---------- */
+function drawArt(kind, t) {
+  if (kind === 'prologue') {
+    sky('#1b1630', '#c0704a');
+    ctx.fillStyle = 'rgba(255,240,210,.8)';
+    for (let i = 0; i < 40; i++) { const sx = (i * 197) % W, sy = (i * 89) % 220; circ(sx, sy, (i % 3) * 0.5 + 0.6 + Math.sin(t * 2 + i) * 0.3); }
+    hills(0, 360, 50, 1, '#4a2c34'); hills(300, 420, 30, 4, '#2b1a1c');
+    drawWagon(560, 432, '#160d0c');
+    drawHorse(700, 438, 0.9, t * 2, { pose: 'stand', rider: false, ink: '#160d0c' });
+    drawFire(420, 438, t);
+  } else if (kind === 'cabin') {
+    sky('#141a33', '#5c5a80');
+    ctx.fillStyle = '#e9eef8'; circ(860, 80, 26);
+    hills(0, 330, 60, 2, '#3a4466');
+    for (let i = 0; i < 9; i++) drawPine(60 + i * 115 + (i % 2) * 30, 400, 130 + (i * 37) % 60, '#1d2238');
+    ctx.fillStyle = '#dfe6f2'; ctx.fillRect(0, 410, W, H);
+    hills(50, 420, 10, 6, '#dfe6f2');
+    drawCabin(760, 420, '#1a1d2e', true, t);
+    snow(t, 1);
+  } else if (kind === 'river') {
+    sky('#7c8fa8', '#d9d2c4');
+    hills(0, 300, 50, 3, '#8a95a6'); hills(200, 340, 30, 7, '#5f6c7c');
+    ctx.fillStyle = '#4c6478'; ctx.fillRect(0, 360, W, 80);
+    for (let i = 0; i < 9; i++) {
+      const fx = ((i * 140 + t * 30) % (W + 120)) - 60;
+      ctx.fillStyle = '#e6edf3'; ctx.beginPath();
+      ctx.moveTo(fx, 372 + (i % 3) * 18); ctx.lineTo(fx + 50, 368 + (i % 3) * 18); ctx.lineTo(fx + 62, 380 + (i % 3) * 18); ctx.lineTo(fx + 8, 384 + (i % 3) * 18); ctx.fill();
+    }
+    ctx.fillStyle = '#3a2f28'; ctx.fillRect(0, 438, W, H);
+    drawHorse(640, 470, 0.95, 0, { pose: 'stand', rider: false, ink: '#1e1712' });
+    drawWalker(560, 470, 0, '#1e1712');
+  } else if (kind === 'range' || kind === 'herd') {
+    sky('#3d1f3a', '#f2a65a');
+    ctx.fillStyle = '#ffd98a'; circ(700, 330, 60);
+    hills(0, 370, 40, 5, '#7a3f3a'); hills(400, 420, 25, 8, '#3a1d18');
+    ctx.fillStyle = '#2a140f'; ctx.fillRect(0, 440, W, H);
+    if (kind === 'herd') {
+      for (let i = 0; i < 9; i++) drawCowSide(80 + i * 75 + Math.sin(i) * 20, 438 - (i % 2) * 6, 0.9 + (i % 3) * 0.08, '#2a140f', i % 3 === 0);
+      drawHorse(820, 444, 1.05, t * 1.2, { pose: 'walk', ink: '#2a140f' });
+    } else {
+      drawHorse(((t * 40) % (W + 200)) - 100, 444, 1.05, t * 3, { pose: 'walk', ink: '#2a140f' });
+    }
+  } else if (kind === 'corral') {
+    sky('#7fb0c8', '#efd9a8');
+    hills(0, 340, 40, 9, '#b08a5c');
+    ctx.fillStyle = '#c9a26b'; ctx.fillRect(0, 400, W, H);
+    fence(0, 410, '#4a2e18', 0);
+    const ph = t * 6, k = (Math.sin(ph) + 1) / 2;
+    ctx.save(); ctx.translate(480, 470); ctx.rotate(Math.sin(ph) * 0.25); ctx.translate(-480, -470 - Math.abs(Math.sin(ph)) * 20);
+    drawHorse(480, 470, 1.4, ph, { pose: 'buck', kick: k, armUp: true, lean: -Math.sin(ph) * 0.3, ink: '#2a170c' });
+    ctx.restore();
+  } else if (kind === 'desk') {
+    sky('#1a120c', '#3a2618');
+    const g = ctx.createRadialGradient(150, 220, 10, 150, 220, 460);
+    g.addColorStop(0, 'rgba(255,190,100,.45)'); g.addColorStop(1, 'rgba(255,190,100,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#4a2e1a'; ctx.fillRect(0, 380, W, H);
+    ctx.save(); ctx.translate(330, 300); ctx.rotate(-0.04);
+    ctx.fillStyle = '#efe2c4'; ctx.fillRect(-150, -110, 300, 200);
+    ctx.globalAlpha = 0.85;
+    const ph = 1.2;
+    ctx.save(); ctx.translate(0, 60); ctx.rotate(-0.22);
+    drawHorse(0, 0, 0.95, ph, { pose: 'buck', kick: 0.9, armUp: true, lean: -0.25, ink: '#3b2a1c' });
+    ctx.restore();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+    ctx.strokeStyle = '#d4b06a'; ctx.lineWidth = 6; line(470, 420, 520, 340); ctx.strokeStyle = '#2a1a0e'; ctx.lineWidth = 6; line(466, 426, 470, 420);
+    ctx.fillStyle = '#2a1a0e'; ctx.fillRect(84, 230, 22, 150); ctx.beginPath(); ctx.moveTo(44, 240); ctx.lineTo(146, 240); ctx.lineTo(118, 180); ctx.lineTo(72, 180); ctx.fill();
+  }
+}
+
+const snowFlakes = Array.from({ length: 110 }, () => ({ x: rand(0, W), y: rand(0, H), r: rand(0.8, 2.6), s: rand(20, 60) }));
+function snow(t, drift, dt = 0) {
+  ctx.fillStyle = 'rgba(255,255,255,.85)';
+  for (const f of snowFlakes) {
+    const y = (f.y + t * f.s) % H;
+    const x = ((f.x - t * drift * f.s * 2 + Math.sin(t + f.y) * 10) % W + W) % W;
+    circ(x, y, f.r);
+  }
+}
+function fence(off, y, ink, scroll) {
+  ctx.fillStyle = ink;
+  for (let x = -((scroll) % 120); x < W + 120; x += 120) ctx.fillRect(x, y - 60, 8, 64);
+  ctx.fillRect(0, y - 54, W, 6); ctx.fillRect(0, y - 32, W, 6);
+}
+
+/* ---------- Title ---------- */
+class Title {
+  constructor() {
+    this.t = 0; const s = load();
+    this.cont = s && s.step > 1 ? s : null;
+    this.btns = [{ label: 'Ride Out', x: W / 2 - 110, y: 390, w: 220, h: 50, fn: () => { STATS = STATS_ZERO(); clearSave(); startAt(1); } }];
+    if (this.cont) {
+      this.btns[0].x = W / 2 - 240;
+      this.btns.push({ label: 'Continue', x: W / 2 + 20, y: 390, w: 220, h: 50, fn: () => { STATS = Object.assign(STATS_ZERO(), this.cont.STATS); startAt(this.cont.step); } });
+    }
+  }
+  update(dt) {
+    this.t += dt;
+    if (ptr.tap) for (const b of this.btns) if (ptr.x > b.x && ptr.x < b.x + b.w && ptr.y > b.y && ptr.y < b.y + b.h) { sfx.page(); b.fn(); return; }
+    if (pressed.Enter || pressed.Space) { sfx.page(); this.btns[this.btns.length - 1].fn(); }
+  }
+  draw() {
+    const t = this.t;
+    sky('#2a1430', '#f0a050');
+    ctx.fillStyle = '#ffe2a0'; circ(W / 2, 330, 90);
+    ctx.fillStyle = 'rgba(255,226,160,.18)'; circ(W / 2, 330, 120);
+    hills(0, 360, 50, 1.3, '#8a4636'); hills(500, 410, 30, 2.1, '#4a2420');
+    ctx.fillStyle = '#21100c'; ctx.beginPath(); ctx.moveTo(0, H);
+    for (let x = 0; x <= W; x += 8) ctx.lineTo(x, 470 - Math.max(0, 60 - Math.abs(x - 480) * 0.18) - hillY(x, 7, 8));
+    ctx.lineTo(W, H); ctx.fill();
+    drawHorse(480, 418, 1.15, t * 0.8, { pose: 'stand', ink: '#21100c', tailLift: Math.sin(t) * 3 });
+    txt('LONE COWBOY', W / 2, 130, 82, FD, '#fbe7c0', 'center');
+    txt('a game after the life story of Will James, 1930', W / 2, 172, 24, FB, '#fbe7c0', 'center');
+    for (const b of this.btns) {
+      ctx.fillStyle = 'rgba(30,14,10,.82)'; rrect(b.x, b.y, b.w, b.h, 6); ctx.fill();
+      ctx.strokeStyle = '#e8c88a'; ctx.lineWidth = 2; ctx.stroke();
+      txt(b.label, b.x + b.w / 2, b.y + 34, 24, FD, '#fbe7c0', 'center', false);
+    }
+    if (this.cont) txt(`saved at ${chapterName(this.cont.step)}`, W / 2 + 130, 462, 17, FB, '#f6dcb0', 'center');
+    txt('Public domain in the US since January 1, 2026', W / 2, 520, 15, FB, 'rgba(251,231,192,.7)', 'center', false);
+    vignette(0.4);
+  }
+}
+function chapterName(s) { return { 1: 'the beginning', 2: 'Chapter One', 4: 'Chapter Two', 6: 'Chapter Three', 8: 'Chapter Four' }[s] || 'the trail'; }
+
+/* ---------- Story card ---------- */
+class Story {
+  constructor(d) { this.d = d; this.t = 0; this.shown = 1; }
+  update(dt) {
+    this.t += dt;
+    const total = this.d.paras.length;
+    if (this.t > 0.9 * this.shown && this.shown < total) this.shown = Math.min(total, 1 + Math.floor(this.t / 1.6));
+    if (act() && this.t > 0.4) {
+      if (this.shown < total) { this.shown = total; this.t = 1.6 * total; }
+      else { sfx.page(); next(); }
+    }
+  }
+  draw() {
+    drawArt(this.d.art, this.t);
+    vignette(0.5);
+    const g = ctx.createLinearGradient(0, 0, W * 0.62, 0);
+    g.addColorStop(0, 'rgba(20,10,6,.9)'); g.addColorStop(0.75, 'rgba(20,10,6,.72)'); g.addColorStop(1, 'rgba(20,10,6,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, W * 0.62, H);
+    let y = 74;
+    txt(this.d.kicker.toUpperCase(), 48, y, 16, FB, '#d9b77a', 'left', false);
+    y += 50; txt(this.d.title, 48, y, 40, FD, '#fbe7c0');
+    y += 20;
+    for (let i = 0; i < this.d.paras.length; i++) {
+      ctx.globalAlpha = i < this.shown ? clamp((this.t - i * 1.6) / 0.8, 0, 1) : 0;
+      for (const ln of wrap(this.d.paras[i], 480, 21)) { y += 27; txt(ln, 48, y, 21, FB, '#f1e2c4'); }
+      y += 12;
+      ctx.globalAlpha = 1;
+    }
+    if (this.d.controls && this.shown === this.d.paras.length) {
+      y += 6;
+      for (const ln of wrap(this.d.controls, 480, 18)) { y += 22; txt(ln, 48, y, 18, FB, '#e7c27d'); }
+    }
+    const blink = 0.55 + Math.sin(this.t * 4) * 0.35;
+    ctx.globalAlpha = blink;
+    txt(this.shown < this.d.paras.length ? 'tap to read on' : 'tap or press Space to ride on', 48, H - 34, 18, FB, '#fbe7c0', 'left', false);
+    ctx.globalAlpha = 1;
+  }
+}
+
+/* ---------- Side-scrolling runner (chapters 1 & 2) ---------- */
+const TRAP = {
+  id: 'trap', title: "Bopy's Trapline", length: 9000, speed: 235, walker: true, pw: 22, ph: 66,
+  gapMin: 300, gapMax: 520, pickupChance: 0.75,
+  obstacles: [{ type: 'log', w: 74, h: 26 }, { type: 'stump', w: 34, h: 42 }, { type: 'rock', w: 50, h: 30 }],
+  skyA: ['#3b4a72', '#d6b2a8'], skyB: ['#0f0d22', '#4a3358'], ground: '#e7edf6', ink: '#191726',
+  pickupName: 'pelt', fail: 'You went down in the drifts. Bopy hauls you out by the collar.'
+};
+const RIDE = {
+  id: 'ride', title: 'Drifting South', length: 16000, speed: 340, walker: false, pw: 62, ph: 112,
+  gapMin: 380, gapMax: 680, pickupChance: 0.5, thirst: true,
+  obstacles: [{ type: 'sage', w: 46, h: 34 }, { type: 'fence', w: 30, h: 50 }, { type: 'hole', w: 44, h: 10 }, { type: 'weed', w: 32, h: 30 }],
+  skyA: ['#e8b56c', '#f7e2ae'], skyB: ['#4a2246', '#f0874a'], ground: '#b98a52', ink: '#2a160c',
+  pickupName: 'canteen', fail: 'Your horse went down hard. You both walk it off.'
+};
+
+class Runner {
+  constructor(cfg) {
+    Object.assign(this, { cfg, dist: 0, speed: cfg.speed, py: 0, vy: 0, ground: true, hearts: 3, inv: 0, t: 0, ph: 0, water: 100, got: 0, total: 0, hits: 0, done: false, doneT: 0, failed: false, failT: 0, shake: 0, lastHoof: 0 });
+    this.items = []; this.pops = []; this.dust = [];
+    let x = 900;
+    while (x < cfg.length - 500) {
+      const o = pick(cfg.obstacles);
+      this.items.push({ kind: 'ob', type: o.type, x, w: o.w, h: o.h, hit: false });
+      const gap = rand(cfg.gapMin, cfg.gapMax);
+      if (Math.random() < cfg.pickupChance) {
+        this.items.push({ kind: 'pk', x: x + o.w + gap * 0.5, y: Math.random() < 0.35 ? 92 : 4, got: false });
+        this.total++;
+      }
+      x += o.w + gap;
+    }
+  }
+  update(dt) {
+    const c = this.cfg;
+    this.t += dt;
+    if (this.failed) {
+      this.failT += dt;
+      if (this.failT > 0.8 && act()) go(new Runner(c));
+      return;
+    }
+    const p = clamp(this.dist / c.length, 0, 1);
+    if (this.done) { this.speed = Math.max(0, this.speed - 260 * dt); this.doneT += dt; if (this.doneT > 2.6) { next(); return; } }
+    else this.speed = c.speed * (1 + 0.22 * p);
+    this.dist += this.speed * dt;
+    this.ph += this.speed * dt * (c.walker ? 0.045 : 0.035);
+
+    // jump
+    if (!this.done && act() && this.ground) { this.vy = 650; this.ground = false; sfx.jump(); }
+    if (!this.ground) {
+      if (!actHeld() && this.vy > 240) this.vy = 240;
+      this.vy -= 1900 * dt; this.py += this.vy * dt;
+      if (this.py <= 0) { this.py = 0; this.vy = 0; this.ground = true; this.puff(8); }
+    }
+    if (this.ground && this.speed > 10) {
+      const beat = Math.floor(this.ph / Math.PI);
+      if (beat !== this.lastHoof) { this.lastHoof = beat; if (!c.walker) sfx.hoof(); if (Math.random() < 0.5) this.puff(2); }
+    }
+    this.inv = Math.max(0, this.inv - dt);
+    this.shake = Math.max(0, this.shake - dt);
+
+    // items
+    const L = this.dist - c.pw / 2, R = this.dist + c.pw / 2;
+    for (const it of this.items) {
+      if (it.type === 'weed' && it.x - this.dist < 900) it.x -= 110 * dt; // tumbleweeds roll at you
+      if (it.kind === 'ob') {
+        if (it.hit || this.inv > 0 || this.done) continue;
+        if (R > it.x + 6 && L < it.x + it.w - 6 && this.py < it.h - 6) {
+          it.hit = true; this.hearts--; this.hits++; this.inv = 1.3; this.shake = 0.35; sfx.hit();
+          this.pops.push({ x: 220, y: GY - 120, s: c.walker ? 'Tumble!' : 'Stumble!', t: 0 });
+          if (this.hearts <= 0) this.fail();
+        }
+      } else if (!it.got) {
+        const pcx = it.x, pcy = it.y + 14;
+        if (Math.abs(pcx - this.dist) < c.pw / 2 + 14 && pcy > this.py - 12 && pcy < this.py + c.ph + 12) {
+          it.got = true; this.got++; sfx.pick();
+          if (c.thirst) this.water = Math.min(100, this.water + 22);
+          this.pops.push({ x: 220 + (it.x - this.dist), y: GY - it.y - 40, s: c.thirst ? '+ water' : '+1 pelt', t: 0 });
+        }
+      }
+    }
+    if (c.thirst && !this.done) {
+      this.water -= dt * 3.6;
+      if (this.water <= 0) { this.water = 0; this.fail(); }
+    }
+    if (!this.done && this.dist >= c.length) {
+      this.done = true; sfx.win();
+      if (c.id === 'trap') { STATS.pelts += this.got; STATS.peltsMax += this.total; }
+      else STATS.canteens += this.got;
+      STATS.hits += this.hits;
+    }
+    for (const q of this.pops) q.t += dt;
+    this.pops = this.pops.filter(q => q.t < 1.1);
+    for (const d of this.dust) { d.x -= (this.speed * 0.6 + d.vx) * dt; d.y += d.vy * dt; d.t += dt; }
+    this.dust = this.dust.filter(d => d.t < d.life);
+  }
+  puff(n) {
+    const sn = this.cfg.walker;
+    for (let i = 0; i < n; i++) this.dust.push({ x: 220 + rand(-20, 10), y: GY - rand(0, 6), vx: rand(-30, 30), vy: rand(-30, -8), t: 0, life: rand(0.4, 0.9), r: rand(3, 8), c: sn ? '#ffffff' : '#d8b07a' });
+  }
+  fail() { this.failed = true; this.failT = 0; sfx.lose(); }
+  draw() {
+    const c = this.cfg, p = clamp(this.dist / c.length, 0, 1);
+    const top = mix(c.skyA[0], c.skyB[0], p), bot = mix(c.skyA[1], c.skyB[1], p);
+    ctx.save();
+    if (this.shake > 0) ctx.translate(rand(-5, 5) * this.shake * 2, rand(-4, 4) * this.shake * 2);
+    sky(top, bot);
+    // sun or moon
+    if (c.walker) { ctx.fillStyle = `rgba(255,236,200,${0.8 - p * 0.5})`; circ(760, 120 + p * 300, 28); ctx.fillStyle = `rgba(240,244,255,${p})`; circ(200, 80, 18); }
+    else { ctx.fillStyle = mix('#fff4cf', '#ffb560', p); circ(720, 110 + p * 260, 46); }
+    const d = this.dist;
+    hills(d * 0.08, 300, 70, c.walker ? 2 : 5, mix(bot, c.ink, 0.32));
+    if (c.walker) {
+      hills(d * 0.2, 360, 35, 3, mix(bot, c.ink, 0.5));
+      const pc = mix(bot, c.ink, 0.72);
+      for (let i = 0; i < 16; i++) {
+        const per = 2200, bx = ((i * 137.5 - d * 0.5) % per + per) % per - 100;
+        drawPine(bx, 432, 110 + (i * 41) % 70, pc);
+      }
+    } else {
+      hills(d * 0.2, 360, 30, 7, mix(bot, c.ink, 0.5));
+      const mc = mix(bot, c.ink, 0.62);
+      for (let i = 0; i < 3; i++) {             // mesas
+        const per = 2600, bx = ((i * 870 - d * 0.32) % per + per) % per - 200;
+        ctx.fillStyle = mc; ctx.beginPath(); ctx.moveTo(bx, 420); ctx.lineTo(bx + 30, 330 - i * 10); ctx.lineTo(bx + 150 + i * 30, 330 - i * 10); ctx.lineTo(bx + 190 + i * 30, 420); ctx.fill();
+      }
+    }
+    // ground
+    ctx.fillStyle = c.ground; ctx.fillRect(0, GY, W, H - GY);
+    ctx.fillStyle = mix(c.ground, c.ink, 0.15); ctx.fillRect(0, GY, W, 3);
+    ctx.fillStyle = mix(c.ground, c.ink, 0.12);
+    for (let i = 0; i < 24; i++) { const per = 1400, gx = ((i * 211 - d) % per + per) % per - 50; ctx.fillRect(gx, GY + 12 + (i * 37) % 70, 18 + (i % 4) * 8, 3); }
+
+    // landmark at the end
+    const lx = 220 + (c.length + 260 - d);
+    if (lx < W + 200) {
+      if (c.walker) drawCabin(lx, GY, c.ink, true, this.t);
+      else { drawWagon(lx, GY, c.ink); drawFire(lx - 110, GY, this.t); drawHorse(lx + 160, GY, 0.85, 0, { pose: 'stand', rider: false, ink: c.ink }); }
+    }
+    for (const it of this.items) {
+      const sx = 220 + (it.x - d);
+      if (sx < -120 || sx > W + 120) continue;
+      if (it.kind === 'ob') this.drawOb(it, sx);
+      else if (!it.got) this.drawPk(it, sx);
+    }
+    for (const q of this.dust) { ctx.fillStyle = alpha(q.c, 0.6 * (1 - q.t / q.life)); circ(q.x, q.y, q.r * (1 + q.t)); }
+    // player
+    const blink = this.inv > 0 && Math.floor(this.t * 14) % 2 === 0;
+    if (!blink) {
+      if (c.walker) drawWalker(220, GY - this.py, this.ph, c.ink, !this.ground);
+      else drawHorse(220, GY - this.py, 1, this.ground ? this.ph : 2.2, { ink: c.ink, lean: this.ground ? 0.08 : 0.25, farTint: bot });
+    }
+    if (c.walker) snow(this.t, 1 + this.speed / 200);
+    // dusk darkening on the trapline
+    if (c.walker) { ctx.fillStyle = `rgba(8,6,20,${p * 0.35})`; ctx.fillRect(0, 0, W, H); }
+    for (const q of this.pops) { ctx.globalAlpha = 1 - q.t / 1.1; txt(q.s, q.x, q.y - q.t * 40, 22, FD, '#fff3d4', 'center'); ctx.globalAlpha = 1; }
+    ctx.restore();
+    this.hud(p);
+  }
+  drawOb(it, x) {
+    ctx.save();
+    if (it.type === 'log') {
+      ctx.fillStyle = '#4a3020'; rrect(x, GY - it.h, it.w, it.h, 12); ctx.fill();
+      ctx.fillStyle = '#7a5434'; ell(x + it.w - 8, GY - it.h / 2, 7, it.h / 2 - 1);
+      ctx.strokeStyle = '#4a3020'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.ellipse(x + it.w - 8, GY - it.h / 2, 3.5, it.h / 4, 0, 0, 7); ctx.stroke();
+      ctx.fillStyle = '#f4f8fd'; rrect(x + 4, GY - it.h - 5, it.w - 14, 8, 4); ctx.fill();
+      ctx.strokeStyle = '#4a3020'; ctx.lineWidth = 3; line(x + 20, GY - it.h + 2, x + 12, GY - it.h - 14);
+    } else if (it.type === 'stump') {
+      ctx.fillStyle = '#3e2a1c'; ctx.fillRect(x + 3, GY - it.h, it.w - 6, it.h);
+      ctx.fillRect(x - 3, GY - 8, it.w + 6, 8);
+      ctx.fillStyle = '#f4f8fd'; ell(x + it.w / 2, GY - it.h, it.w / 2 + 3, 6);
+    } else if (it.type === 'rock') {
+      ctx.fillStyle = '#5b5f6e'; ctx.beginPath(); ctx.moveTo(x, GY); ctx.lineTo(x + 6, GY - it.h + 8); ctx.lineTo(x + 20, GY - it.h); ctx.lineTo(x + it.w - 6, GY - it.h + 6); ctx.lineTo(x + it.w, GY); ctx.fill();
+      ctx.fillStyle = '#f4f8fd'; ell(x + 22, GY - it.h + 2, 16, 5, -0.1);
+    } else if (it.type === 'sage') {
+      ctx.fillStyle = '#6f7a58';
+      for (let i = 0; i < 7; i++) circ(x + 8 + (i * 6) % it.w * 0.85, GY - 8 - (i % 3) * 9 - (i === 3 ? 8 : 0), 10);
+      ctx.fillStyle = '#8c9870'; for (let i = 0; i < 4; i++) circ(x + 12 + i * 7, GY - 20 - (i % 2) * 6, 5);
+    } else if (it.type === 'fence') {
+      ctx.fillStyle = '#4a2e18'; ctx.fillRect(x, GY - it.h - 4, 7, it.h + 4); ctx.fillRect(x + it.w - 7, GY - it.h - 4, 7, it.h + 4);
+      ctx.strokeStyle = '#3a2a1e'; ctx.lineWidth = 1.5;
+      for (const yy of [it.h - 6, it.h * 0.6, it.h * 0.25]) {
+        line(x - 30, GY - yy, x + it.w + 30, GY - yy);
+        for (let k = -24; k < it.w + 30; k += 12) line(x + k, GY - yy - 2, x + k + 3, GY - yy + 2);
+      }
+    } else if (it.type === 'hole') {
+      ctx.fillStyle = '#9a6e3e'; ell(x + it.w / 2, GY - 2, it.w / 2 + 8, 7);
+      ctx.fillStyle = '#2a1608'; ell(x + it.w / 2, GY + 1, it.w / 2 - 2, 5);
+    } else if (it.type === 'weed') {
+      const r = it.w / 2, cx = x + r, cy = GY - r, a = -it.x * 0.05;
+      ctx.strokeStyle = '#8a6a3a'; ctx.lineWidth = 2;
+      for (let i = 0; i < 9; i++) { const b = a + i * 0.7; ctx.beginPath(); ctx.arc(cx + Math.cos(b) * 4, cy + Math.sin(b) * 4, r - 3, b, b + 2.4); ctx.stroke(); }
+    }
+    ctx.restore();
+  }
+  drawPk(it, x) {
+    const y = GY - it.y, bob = Math.sin(this.t * 4 + it.x) * 3;
+    ctx.save();
+    if (this.cfg.thirst) {
+      const cy = y - 16 + (it.y > 10 ? bob : 0);
+      ctx.strokeStyle = '#5a3a20'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, cy - 8, 12, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+      ctx.fillStyle = '#8a8f8a'; circ(x, cy, 12); ctx.fillStyle = '#b8c0b8'; circ(x - 3, cy - 3, 6);
+      ctx.fillStyle = '#4a3020'; ctx.fillRect(x - 3, cy - 16, 6, 5);
+      ctx.fillStyle = 'rgba(255,255,255,.7)'; circ(x - 5, cy - 5, 2);
+    } else {
+      const cy = y - 12 + (it.y > 10 ? bob : 0);
+      if (it.y > 10) { ctx.strokeStyle = '#3a2a1e'; ctx.lineWidth = 1.5; line(x, cy - 14, x, cy - 60); }
+      else { ctx.strokeStyle = '#555a66'; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(x, y - 2, 13, Math.PI, 0); ctx.stroke(); }
+      ctx.fillStyle = '#8a5a30'; ell(x, cy, 14, 9);
+      ctx.fillStyle = '#5a3418'; for (let k = -1; k <= 1; k++) ell(x + k * 6, cy, 2, 8);
+      ctx.fillStyle = '#8a5a30'; ell(x + 14, cy + 3, 8, 3, 0.4);
+    }
+    ctx.restore();
+  }
+  hud(p) {
+    const c = this.cfg;
+    ctx.fillStyle = 'rgba(20,10,6,.55)'; rrect(14, 12, c.thirst ? 400 : 300, 54, 8); ctx.fill();
+    for (let i = 0; i < 3; i++) horseshoe(36 + i * 26, 38, i < this.hearts);
+    if (c.thirst) {
+      txt('Water', 120, 45, 18, FB, '#f1e2c4', 'left', false);
+      ctx.fillStyle = 'rgba(255,255,255,.15)'; ctx.fillRect(174, 31, 120, 14);
+      ctx.fillStyle = this.water < 25 ? '#e0583a' : '#7fb6d6'; ctx.fillRect(174, 31, 120 * this.water / 100, 14);
+      txt(`Canteens ${this.got}`, 310, 45, 18, FB, '#f1e2c4', 'left', false);
+    } else {
+      txt(`Pelts ${this.got}`, 120, 45, 20, FB, '#f1e2c4', 'left', false);
+    }
+    // trail progress
+    const x0 = 520, x1 = 800;
+    ctx.strokeStyle = 'rgba(255,240,210,.5)'; ctx.lineWidth = 2; ctx.setLineDash([6, 6]); line(x0, 40, x1, 40); ctx.setLineDash([]);
+    ctx.fillStyle = '#fbe7c0'; circ(lerp(x0, x1, p), 40, 6);
+    txt(c.walker ? 'cabin' : 'cow camp', x1 + 6, 46, 15, FB, '#fbe7c0', 'left');
+    if (this.t < 4.5 && !this.failed) {
+      ctx.globalAlpha = Math.min(1, 4.5 - this.t);
+      txt('Tap or press Space to jump. Hold for a higher leap.', W / 2, 110, 22, FB, '#fff3d4', 'center');
+      ctx.globalAlpha = 1;
+    }
+    if (this.done) banner(c.walker ? 'Home before dark' : 'Cow camp, at last', c.walker ? `${this.got} of ${this.total} pelts` : `${this.got} canteens found`);
+    if (this.failed) banner(c.thirst && this.water <= 0 ? 'Dry as a bone' : 'Down you go', this.failT > 0.8 ? 'Tap to try that stretch again' : '', c.thirst && this.water <= 0 ? 'Your canteen ran dry.' : c.fail);
+  }
+}
+
+function banner(title, sub, line2, cy = H / 2) {
+  ctx.fillStyle = 'rgba(20,10,6,.78)'; ctx.fillRect(0, cy - 80, W, line2 ? 170 : 140);
+  txt(title, W / 2, cy - 18, 44, FD, '#fbe7c0', 'center');
+  let y = cy + 22;
+  if (line2) { txt(line2, W / 2, y, 21, FB, '#f1e2c4', 'center'); y += 32; }
+  if (sub) txt(sub, W / 2, y, 21, FB, '#e7c27d', 'center');
+}
+
+/* ---------- Bronc riding (chapter 3) ---------- */
+class Bronc {
+  constructor() {
+    this.horses = [
+      { name: 'Pinto Ghost', diff: 0.8, ink: '#2a1a10', note: 'a spooky paint with a mean streak' },
+      { name: 'Sorrel Thunder', diff: 1.0, ink: '#3a160a', note: 'sunfishes the minute you land' },
+      { name: 'Widow-Maker', diff: 1.22, ink: '#141010', note: 'nobody has ridden him to the whistle' }
+    ];
+    this.i = 0; this.throws = 0; this.total = 0; this.reset();
+  }
+  reset() { Object.assign(this, { state: 'ready', t: 0, b: 0, bv: 0, ph: 0, nextBuck: 0.9, kick: 0, score: 0, st: 0, fly: null, crowd: 0 }); }
+  update(dt) {
+    this.st += dt;
+    const h = this.horses[this.i];
+    if (this.state === 'ready') {
+      this.ph += dt * 1.5;
+      if (act() && this.st > 0.4) { this.state = 'ride'; this.st = 0; Snd.noise(0.3, 0.1, 900); }
+      return;
+    }
+    if (this.state === 'ride') {
+      const d = h.diff;
+      this.t += dt;
+      this.ph += dt * (5 + d * 2.2);
+      this.nextBuck -= dt;
+      if (this.nextBuck <= 0) {
+        this.bv += (Math.random() < 0.5 ? -1 : 1) * rand(0.5, 0.9) * d;
+        this.nextBuck = rand(0.5, 1.0) / d;
+        this.kick = 1; sfx.hoof(); Snd.noise(0.15, 0.08, 400);
+      }
+      this.kick = Math.max(0, this.kick - dt * 2.5);
+      const inp = sideHeld();
+      this.bv += inp * 4.0 * dt;
+      this.bv += this.b * 1.5 * d * dt;
+      this.bv *= Math.pow(0.5, dt);
+      this.b += this.bv * dt;
+      this.score += (1 - Math.abs(this.b)) * dt;
+      if (Math.abs(this.b) > 1) {
+        this.state = 'thrown'; this.st = 0; this.throws++; sfx.thud();
+        const dir = Math.sign(this.b);
+        this.fly = { x: 480 + dir * 10, y: 300, vx: dir * 260 + 60, vy: -420, r: 0, vr: dir * 7, down: false };
+      } else if (this.t >= 8) {
+        this.state = 'made'; this.st = 0; sfx.whistle();
+        this.total += Math.round(this.score * 10 + 20);
+      }
+      return;
+    }
+    if (this.state === 'thrown') {
+      this.ph += dt * 6;
+      const f = this.fly;
+      if (!f.down) {
+        f.vy += 1100 * dt; f.x += f.vx * dt; f.y += f.vy * dt; f.r += f.vr * dt;
+        if (f.y > GY + 14) { f.y = GY + 14; f.down = true; f.r = Math.sign(f.vr) * Math.PI / 2; sfx.thud(); }
+      }
+      if (this.st > 1.2 && act()) { const i = this.i; this.reset(); this.i = i; }
+      return;
+    }
+    if (this.state === 'made') {
+      this.ph += dt * 2;
+      if (this.st > 2.4) {
+        if (this.i < 2) { const i = this.i + 1; this.reset(); this.i = i; }
+        else { STATS.throws += this.throws; STATS.bronc += this.total; next(); }
+      }
+    }
+  }
+  draw() {
+    const h = this.horses[this.i];
+    sky('#86b7cf', '#f2dcaa');
+    hills(0, 330, 40, 9, '#b9946a'); hills(300, 370, 20, 3, '#9c7a52');
+    ctx.fillStyle = '#c8a06a'; ctx.fillRect(0, 390, W, H);
+    // spectators on the far fence
+    for (let i = 0; i < 6; i++) {
+      const sx = 90 + i * 160 + (i % 2) * 30;
+      ctx.save(); ctx.translate(sx, 352 - (i % 2) * 4);
+      const cheer = this.state === 'made' && (Math.floor(this.st * 6 + i) % 2 === 0);
+      drawRider('#4a2e18', 0, cheer, false);
+      ctx.restore();
+    }
+    fence(0, 410, '#4a2e18', 0);
+    // dust
+    const riding = this.state === 'ride' || this.state === 'thrown';
+    if (riding) for (let i = 0; i < 6; i++) { ctx.fillStyle = `rgba(214,180,130,${0.25 + 0.1 * Math.sin(this.ph + i)})`; circ(420 + i * 24 + Math.sin(this.ph * 2 + i) * 20, GY + 8 - Math.abs(Math.sin(this.ph + i)) * 20, 18 + i % 3 * 6); }
+    // horse
+    let rot = 0, hop = 0, kick = 0;
+    if (riding) { rot = Math.sin(this.ph) * 0.3; hop = Math.abs(Math.sin(this.ph)) * 34; kick = clamp(0.5 + Math.sin(this.ph) * 0.6 + this.kick * 0.4, 0, 1); }
+    else if (this.state === 'ready') { rot = Math.sin(this.ph * 3) * 0.02; }
+    const sc = 1.75, hx = 480;
+    ctx.save();
+    const pivot = rot > 0 ? hx + 28 * sc : hx - 30 * sc;
+    ctx.translate(pivot, GY + 20 - hop); ctx.rotate(rot); ctx.translate(-pivot, -(GY + 20));
+    const showRider = this.state !== 'thrown';
+    drawHorse(hx, GY + 20, sc, this.ph, { pose: riding ? 'buck' : 'stand', kick, ink: h.ink, rider: showRider, saddle: true, lean: this.b * 0.75 - rot * 0.5, armUp: riding || this.state === 'made', farTint: '#c8a06a' });
+    ctx.restore();
+    if (this.state === 'thrown') {
+      const f = this.fly;
+      ctx.save(); ctx.translate(f.x, f.y); ctx.rotate(f.r); ctx.scale(sc, sc); drawRider('#2a1a10', 0, true); ctx.restore();
+    }
+    // UI
+    ctx.fillStyle = 'rgba(20,10,6,.6)'; rrect(14, 12, 380, 54, 8); ctx.fill();
+    txt(h.name, 32, 47, 26, FD, '#fbe7c0', 'left', false);
+    for (let i = 0; i < 3; i++) { ctx.fillStyle = i < this.i ? '#e7c27d' : i === this.i ? '#fbe7c0' : 'rgba(251,231,192,.3)'; circ(300 + i * 26, 40, 8); }
+    ctx.fillStyle = 'rgba(20,10,6,.6)'; rrect(W - 214, 12, 154, 54, 8); ctx.fill();
+    txt(this.state === 'ride' ? (8 - this.t).toFixed(1) + 's' : '8.0s', W - 137, 50, 28, FD, '#fbe7c0', 'center', false);
+    // balance gauge
+    const gx = W / 2, gy = 500, gw = 300;
+    ctx.fillStyle = 'rgba(20,10,6,.65)'; rrect(gx - gw / 2 - 14, gy - 22, gw + 28, 40, 8); ctx.fill();
+    const gg = ctx.createLinearGradient(gx - gw / 2, 0, gx + gw / 2, 0);
+    gg.addColorStop(0, '#c0392b'); gg.addColorStop(0.2, '#d9a441'); gg.addColorStop(0.4, '#7fa35a'); gg.addColorStop(0.6, '#7fa35a'); gg.addColorStop(0.8, '#d9a441'); gg.addColorStop(1, '#c0392b');
+    ctx.fillStyle = gg; ctx.fillRect(gx - gw / 2, gy - 6, gw, 12);
+    const nx = gx + clamp(this.b, -1.1, 1.1) * gw / 2;
+    ctx.fillStyle = '#fff6e0'; ctx.beginPath(); ctx.moveTo(nx, gy - 4); ctx.lineTo(nx - 8, gy - 18); ctx.lineTo(nx + 8, gy - 18); ctx.fill();
+    txt('◀', gx - gw / 2 - 40, gy + 7, 22, FB, '#fbe7c0', 'center', false);
+    txt('▶', gx + gw / 2 + 40, gy + 7, 22, FB, '#fbe7c0', 'center', false);
+    if (this.state === 'ready') banner(`${h.name}`, 'Tap or press Space to nod for the gate', h.note.charAt(0).toUpperCase() + h.note.slice(1) + '.', 172);
+    if (this.state === 'ride' && this.t < 2.2) { ctx.globalAlpha = 1 - this.t / 2.2; txt('Lean against the buck: keep the needle in the green', W / 2, 120, 22, FB, '#fff3d4', 'center'); ctx.globalAlpha = 1; }
+    if (this.state === 'thrown' && this.st > 0.6) banner('Throwed!', this.st > 1.2 ? 'Tap to climb back on' : '', 'You picked yourself out of the dirt. The boys are grinning.', 172);
+    if (this.state === 'made') banner('You rode him!', this.i < 2 ? 'Next horse coming up' : 'The rough string is yours', 'There goes the whistle.', 172);
+  }
+}
+
+/* ---------- Roundup (chapter 4) ---------- */
+const PEN = { x: 780, y: 0, w: 180, h: 540, gap: 170 };
+class Roundup {
+  constructor() {
+    // The corral fills the right edge; its fence has one wide gate in the middle.
+    const P = PEN, side = (P.h - P.gap) / 2;
+    this.walls = [[P.x, -20, P.x, P.y + side], [P.x, P.y + P.h - side, P.x, H + 20]];
+    this.r = { x: 60, y: 270, vx: 0, vy: 0, a: 0, ph: 0 };
+    this.cows = [];
+    const looks = [['#8a3d22', '#efe4d2'], ['#6b4a30', '#6b4a30'], ['#2a2420', '#2a2420'], ['#a8683a', '#efe4d2'], ['#3a2a22', '#efe4d2']];
+    while (this.cows.length < 12) {
+      const c = { x: rand(200, 680), y: rand(60, 480), vx: 0, vy: 0, a: rand(0, 6.28), wa: rand(0, 6.28), pen: false, look: pick(looks), moo: rand(2, 8) };
+      if (this.cows.every(o => Math.hypot(o.x - c.x, o.y - c.y) > 40)) this.cows.push(c);
+    }
+    this.time = 120; this.t = 0; this.penned = 0; this.need = 8; this.state = 'play'; this.st = 0; this.dust = []; this.pops = [];
+    this.tufts = Array.from({ length: 140 }, () => ({ x: rand(0, W), y: rand(0, H), s: rand(2, 5), k: Math.random() }));
+  }
+  collide(o, r) {
+    r += 5;
+    for (const [x1, y1, x2, y2] of this.walls) {
+      const ex = x2 - x1, ey = y2 - y1, L = ex * ex + ey * ey;
+      const k = clamp(((o.x - x1) * ex + (o.y - y1) * ey) / L, 0, 1);
+      const cx = x1 + ex * k, cy = y1 + ey * k;
+      const dx = o.x - cx, dy = o.y - cy, d = Math.hypot(dx, dy);
+      if (d < r && d > 0.01) {
+        const nx = dx / d, ny = dy / d;
+        o.x = cx + nx * r; o.y = cy + ny * r;
+        const vn = o.vx * nx + o.vy * ny;
+        if (vn < 0) { o.vx -= vn * nx; o.vy -= vn * ny; }
+      }
+    }
+    r -= 5;
+    o.x = clamp(o.x, r, W - r); o.y = clamp(o.y, r, H - r);
+  }
+  update(dt) {
+    this.t += dt; this.st += dt;
+    if (this.state === 'win') { if (this.st > 2.8) { STATS.cattle += this.penned; STATS.timeLeft += Math.round(this.time); next(); } this.simCows(dt); return; }
+    if (this.state === 'fail') { if (this.st > 0.9 && act()) go(new Roundup()); return; }
+    this.time -= dt;
+    // rider control
+    const r = this.r;
+    let dx = (keys.ArrowRight || keys.KeyD ? 1 : 0) - (keys.ArrowLeft || keys.KeyA ? 1 : 0);
+    let dy = (keys.ArrowDown || keys.KeyS ? 1 : 0) - (keys.ArrowUp || keys.KeyW ? 1 : 0);
+    if (ptr.down) { const ex = ptr.x - r.x, ey = ptr.y - r.y, dd = Math.hypot(ex, ey); if (dd > 12) { dx = ex / dd; dy = ey / dd; } }
+    const m = Math.hypot(dx, dy) || 1;
+    r.vx += (dx / m * 240 - r.vx) * Math.min(1, dt * 4);
+    r.vy += (dy / m * 240 - r.vy) * Math.min(1, dt * 4);
+    if (!dx && !dy) { r.vx *= Math.pow(0.05, dt); r.vy *= Math.pow(0.05, dt); }
+    r.x += r.vx * dt; r.y += r.vy * dt;
+    this.collide(r, 14);
+    const sp = Math.hypot(r.vx, r.vy);
+    if (sp > 15) { r.a = Math.atan2(r.vy, r.vx); r.ph += sp * dt * 0.06; if (Math.random() < dt * 20) this.dust.push({ x: r.x - Math.cos(r.a) * 16, y: r.y - Math.sin(r.a) * 16, t: 0, life: 0.8, s: rand(4, 8) }); }
+    this.simCows(dt);
+    // Once the target is met, riding into the corral ends the day. All twelve ends it too.
+    if (this.state === 'play' && this.penned >= this.need) {
+      if (this.metAt === undefined) { this.metAt = this.t; sfx.pick(); }
+      if (this.penned === 12 || r.x > PEN.x + 30) { this.state = 'win'; this.st = 0; sfx.win(); }
+    }
+    if (this.time <= 0 && this.state === 'play') {
+      this.time = 0;
+      if (this.penned >= this.need) { this.state = 'win'; this.st = 0; sfx.win(); }
+      else { this.state = 'fail'; this.st = 0; sfx.lose(); }
+    }
+  }
+  simCows(dt) {
+    const r = this.r, P = PEN;
+    for (const c of this.cows) {
+      let fx = 0, fy = 0;
+      const dx = c.x - r.x, dy = c.y - r.y, d = Math.hypot(dx, dy) || 1;
+      let alarmed = false;
+      if (d < 125 && this.state === 'play') { const f = (125 - d) / 125; fx += dx / d * f * 480; fy += dy / d * f * 480; alarmed = true; }
+      c.wa += rand(-1, 1) * dt * 2.5;
+      fx += Math.cos(c.wa) * 22; fy += Math.sin(c.wa) * 22;
+      for (const o of this.cows) {
+        if (o === c) continue;
+        const ox = c.x - o.x, oy = c.y - o.y, od = Math.hypot(ox, oy) || 1;
+        if (od < 26) { fx += ox / od * (26 - od) * 18; fy += oy / od * (26 - od) * 18; }
+        else if (od < 80 && !c.pen && !o.pen) { fx -= ox / od * 5; fy -= oy / od * 5; }
+      }
+      const m = 46;
+      if (c.x < m) fx += (m - c.x) * 8; if (c.x > W - m) fx -= (c.x - W + m) * 8;
+      if (c.y < m) fy += (m - c.y) * 8; if (c.y > H - m) fy -= (c.y - H + m) * 8;
+      if (c.pen) { fx += (P.x + P.w * 0.62 - c.x) * 1.5; fy += (P.y + P.h / 2 - c.y) * 1.5; }
+      else {
+        // cattle shy away from fences, so they don't get pinned against them
+        for (const [x1, y1, x2, y2] of this.walls) {
+          const ex = x2 - x1, ey = y2 - y1, k = clamp(((c.x - x1) * ex + (c.y - y1) * ey) / (ex * ex + ey * ey), 0, 1);
+          const wx = c.x - (x1 + ex * k), wy = c.y - (y1 + ey * k), wd = Math.hypot(wx, wy) || 1;
+          if (wd < 36) { fx += wx / wd * (36 - wd) * 9; fy += wy / wd * (36 - wd) * 9; }
+        }
+        // cattle near the gate smell the hay and drift in
+        const gx = P.x + 40 - c.x, gy = P.y + P.h / 2 - c.y, gd = Math.hypot(gx, gy) || 1;
+        if (gd < 200) { fx += gx / gd * 80; fy += gy / gd * 80; }
+      }
+      c.vx += fx * dt; c.vy += fy * dt;
+      const damp = Math.pow(c.spook > 0 ? 0.45 : 0.15, dt); c.vx *= damp; c.vy *= damp;
+      c.spook = alarmed ? 0.8 : Math.max(0, (c.spook || 0) - dt);
+      const sp = Math.hypot(c.vx, c.vy), cap = alarmed ? 135 : c.spook > 0 ? 90 : 34;
+      if (sp > cap) { c.vx *= cap / sp; c.vy *= cap / sp; }
+      c.x += c.vx * dt; c.y += c.vy * dt;
+      this.collide(c, 11);
+      if (c.pen) { c.x = clamp(c.x, P.x + 24, W - 18); c.y = clamp(c.y, 20, H - 20); }
+      if (sp > 6) { const ta = Math.atan2(c.vy, c.vx); let da = ta - c.a; da = Math.atan2(Math.sin(da), Math.cos(da)); c.a += da * Math.min(1, dt * 5); }
+      if (!c.pen && c.x > P.x + 26) {
+        c.pen = true; this.penned++; sfx.moo(); this.pops.push({ x: c.x, y: c.y - 20, t: 0, s: `${this.penned}` });
+      }
+      c.moo -= dt; if (c.moo < 0) { c.moo = rand(6, 14); if (alarmed && Math.random() < 0.4) sfx.moo(); }
+    }
+    for (const q of this.pops) q.t += dt; this.pops = this.pops.filter(q => q.t < 1);
+    for (const q of this.dust) q.t += dt; this.dust = this.dust.filter(q => q.t < q.life);
+  }
+  draw() {
+    const P = PEN, dusk = clamp(1 - this.time / 120, 0, 1);
+    ctx.fillStyle = mix('#b4ae72', '#a88a5a', dusk * 0.6); ctx.fillRect(0, 0, W, H);
+    for (const t of this.tufts) { ctx.fillStyle = t.k < 0.5 ? 'rgba(110,112,60,.55)' : 'rgba(210,196,140,.5)'; ell(t.x, t.y, t.s * 2, t.s); }
+    // dry creek
+    ctx.strokeStyle = 'rgba(150,120,80,.5)'; ctx.lineWidth = 18; ctx.beginPath(); ctx.moveTo(0, 470); ctx.bezierCurveTo(200, 420, 380, 540, 620, 500); ctx.stroke();
+    // corral floor + shadow
+    ctx.fillStyle = '#b08a5a'; ctx.fillRect(P.x, P.y, P.w, P.h);
+    ctx.lineCap = 'butt';
+    for (const [x1, y1, x2, y2] of this.walls) { ctx.strokeStyle = 'rgba(0,0,0,.18)'; ctx.lineWidth = 9; line(x1 + 5, y1 + 6, x2 + 5, y2 + 6); }
+    for (const [x1, y1, x2, y2] of this.walls) {
+      ctx.strokeStyle = '#6b4a2b'; ctx.lineWidth = 8; line(x1, y1, x2, y2);
+      ctx.strokeStyle = '#8a6a44'; ctx.lineWidth = 2; line(x1, y1 - 2, x2, y2 - 2);
+      const n = Math.max(2, Math.round(Math.hypot(x2 - x1, y2 - y1) / 40));
+      ctx.fillStyle = '#4a2e18';
+      for (let i = 0; i <= n; i++) ctx.fillRect(lerp(x1, x2, i / n) - 6, lerp(y1, y2, i / n) - 6, 12, 12);
+    }
+    ctx.lineCap = 'round';
+    if (this.t < 7 && this.state === 'play') { ctx.globalAlpha = 0.6 + Math.sin(this.t * 6) * 0.3; txt('➜', P.x - 30, P.y + P.h / 2 + 12, 34, FB, '#fff3d4', 'center'); ctx.globalAlpha = 1; }
+    for (const q of this.dust) { ctx.fillStyle = `rgba(230,210,170,${0.5 * (1 - q.t / q.life)})`; circ(q.x, q.y, q.s * (1 + q.t * 2)); }
+    for (const c of this.cows) this.drawCow(c);
+    this.drawRiderTop();
+    for (const q of this.pops) { ctx.globalAlpha = 1 - q.t; txt(q.s, q.x, q.y - q.t * 30, 24, FD, '#fff3d4', 'center'); ctx.globalAlpha = 1; }
+    ctx.fillStyle = `rgba(80,30,50,${dusk * 0.28})`; ctx.fillRect(0, 0, W, H);
+    // HUD
+    ctx.fillStyle = 'rgba(20,10,6,.62)'; rrect(14, 12, 300, 54, 8); ctx.fill();
+    txt(`In the corral ${this.penned} / ${this.need}`, 32, 47, 22, FB, '#fbe7c0', 'left', false);
+    ctx.fillStyle = 'rgba(20,10,6,.62)'; rrect(W - 284, 12, 224, 54, 8); ctx.fill();
+    txt(`Sundown ${Math.ceil(this.time)}s`, W - 172, 47, 22, FB, this.time < 20 ? '#ffb08a' : '#fbe7c0', 'center', false);
+    if (this.t < 5 && this.state === 'play') { ctx.globalAlpha = Math.min(1, 5 - this.t); txt('Ride around behind the cattle and push them toward the gate', W / 2, 110, 22, FB, '#fff3d4', 'center'); ctx.globalAlpha = 1; }
+    if (this.state === 'play' && this.metAt !== undefined) txt('Enough for the boss. Ride into the corral to call it a day, or keep gathering.', W / 2, 106, 20, FB, '#fff3d4', 'center');
+    if (this.state === 'win') banner(this.penned === 12 ? 'Every last head' : 'Gathered', 'The boss tips his hat.', `${this.penned} head in the corral before sundown.`);
+    if (this.state === 'fail') banner('Sun went down', this.st > 0.9 ? 'Tap to ride the gather again' : '', `Only ${this.penned} head in the corral. The boss needs ${this.need}.`);
+  }
+  drawCow(c) {
+    ctx.save(); ctx.translate(c.x, c.y); ctx.rotate(c.a);
+    ctx.fillStyle = 'rgba(0,0,0,.18)'; ell(3, 4, 15, 9);
+    ctx.fillStyle = c.look[0]; ell(0, 0, 14, 8.5);
+    ctx.fillStyle = c.look[1]; ell(13, 0, 6, 5);
+    if (c.look[1] !== c.look[0]) { ctx.fillStyle = c.look[1]; ell(2, 0, 3, 7); }
+    ctx.strokeStyle = '#e9e0cc'; ctx.lineWidth = 2; line(14, -4, 17, -9); line(14, 4, 17, 9);
+    ctx.strokeStyle = c.look[0]; ctx.lineWidth = 2; line(-13, 0, -19, Math.sin(this.t * 4 + c.wa) * 3);
+    ctx.restore();
+  }
+  drawRiderTop() {
+    const r = this.r;
+    ctx.save(); ctx.translate(r.x, r.y); ctx.rotate(r.a);
+    ctx.fillStyle = 'rgba(0,0,0,.2)'; ell(4, 5, 22, 9);
+    const sw = Math.sin(r.ph) * 4;
+    ctx.fillStyle = '#4a2c18';
+    ell(-9, -6 + sw * 0.2, 4, 2.5); ell(-9, 6 - sw * 0.2, 4, 2.5);
+    ell(0, 0, 20, 8);
+    ell(19, 0, 8, 4.5);
+    ctx.strokeStyle = '#2a170c'; ctx.lineWidth = 3; line(-19, 0, -27, sw);
+    ctx.fillStyle = '#c9a46a'; circ(-2, 0, 8.5);
+    ctx.fillStyle = '#8a6a3a'; circ(-2, 0, 4.5);
+    ctx.restore();
+  }
+}
+
+/* ---------- Ending ---------- */
+class Ending {
+  constructor() {
+    this.t = 0;
+    const s = STATS;
+    this.score = s.pelts * 30 + s.canteens * 15 + s.bronc + s.cattle * 40 + s.timeLeft * 2 - s.throws * 25 - s.hits * 10;
+    this.rank = this.score >= 1400 ? 'Lone Cowboy' : this.score >= 1100 ? 'Top Hand' : this.score >= 850 ? 'Bronc Stomper' : this.score >= 550 ? 'Wrangler' : 'Greenhorn';
+    clearSave();
+  }
+  update(dt) {
+    this.t += dt;
+    if (this.t > 1.5 && act()) { STATS = STATS_ZERO(); go(new Title()); }
+  }
+  draw() {
+    drawArt('desk', this.t);
+    vignette(0.5);
+    const g = ctx.createLinearGradient(W * 0.38, 0, W, 0);
+    g.addColorStop(0, 'rgba(20,10,6,0)'); g.addColorStop(0.2, 'rgba(20,10,6,.8)'); g.addColorStop(1, 'rgba(20,10,6,.92)');
+    ctx.fillStyle = g; ctx.fillRect(W * 0.38, 0, W * 0.62, H);
+    const x = 560; let y = 66;
+    txt('EPILOGUE', x, y, 16, FB, '#d9b77a', 'left', false);
+    y += 44; txt('The Cowboy Artist', x, y, 36, FD, '#fbe7c0'); y += 10;
+    const para = 'Years later, laid up after a bad fall from a bronc, the cowboy picked up his pencil again. The drawings sold, and then the stories that went with them. Smoky the Cowhorse won him the Newbery Medal, and in 1930 he set down his own life and called it Lone Cowboy.';
+    for (const ln of wrap(para, 370, 18)) { y += 23; txt(ln, x, y, 18, FB, '#f1e2c4'); }
+    y += 18;
+    const s = STATS;
+    const rows = [
+      ['Pelts on the trapline', `${s.pelts}${s.peltsMax ? ' of ' + s.peltsMax : ''}`],
+      ['Canteens found', `${s.canteens}`],
+      ['Bronc points', `${s.bronc}`],
+      ['Times throwed', `${s.throws}`],
+      ['Head of cattle penned', `${s.cattle}`],
+      ['Tumbles and stumbles', `${s.hits}`]
+    ];
+    for (const [k, v] of rows) { y += 26; txt(k, x, y, 19, FB, '#e8d3a8', 'left', false); txt(v, 920, y, 18, FD, '#fbe7c0', 'right', false); }
+    y += 16; ctx.strokeStyle = 'rgba(232,200,138,.5)'; ctx.lineWidth = 1; line(x, y, 920, y);
+    y += 34; txt(`${this.rank}`, x, y, 28, FD, '#ffd27a'); txt(`${this.score}`, 920, y, 28, FD, '#ffd27a', 'right');
+    if (this.t > 1.5) { ctx.globalAlpha = 0.55 + Math.sin(this.t * 4) * 0.35; txt('tap to ride again', x, H - 26, 18, FB, '#fbe7c0', 'left', false); ctx.globalAlpha = 1; }
+  }
+}
+
+/* ---------- flow ---------- */
+const FLOW = [
+  () => new Title(),
+  () => new Story(STORY.prologue),
+  () => new Story(STORY.ch1), () => new Runner(TRAP),
+  () => new Story(STORY.ch2), () => new Runner(RIDE),
+  () => new Story(STORY.ch3), () => new Bronc(),
+  () => new Story(STORY.ch4), () => new Roundup(),
+  () => new Ending()
+];
+function startAt(i) { step = i; go(FLOW[i]()); }
+function next() {
+  step = Math.min(step + 1, FLOW.length - 1);
+  if ([2, 4, 6, 8].includes(step)) save(step);
+  go(FLOW[step]());
+}
+window.lonecowboy = { startAt, STATS: () => STATS, scene: () => scene };
+
+/* ---------- mute button ---------- */
+function drawMute() {
+  const x = W - 34, y = 38;
+  ctx.fillStyle = 'rgba(20,10,6,.55)'; circ(x, y, 18);
+  ctx.fillStyle = '#fbe7c0'; ctx.beginPath(); ctx.moveTo(x - 9, y - 4); ctx.lineTo(x - 4, y - 4); ctx.lineTo(x + 2, y - 10); ctx.lineTo(x + 2, y + 10); ctx.lineTo(x - 4, y + 4); ctx.lineTo(x - 9, y + 4); ctx.fill();
+  ctx.strokeStyle = '#fbe7c0'; ctx.lineWidth = 2;
+  if (Snd.muted) { line(x + 5, y - 5, x + 12, y + 5); line(x + 12, y - 5, x + 5, y + 5); }
+  else { ctx.beginPath(); ctx.arc(x + 3, y, 7, -0.8, 0.8); ctx.stroke(); }
+}
+
+/* ---------- main loop ---------- */
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (ptr.tap && Math.hypot(ptr.x - (W - 34), ptr.y - 38) < 26) { Snd.muted = !Snd.muted; ptr.tap = false; touches.clear(); ptr.down = false; }
+  if (pressed.KeyM) Snd.muted = !Snd.muted;
+  scene.update(dt);
+  ctx.setTransform(S, 0, 0, S, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  scene.draw();
+  drawMute();
+  if (fade > 0) { ctx.fillStyle = `rgba(10,5,2,${fade})`; ctx.fillRect(0, 0, W, H); fade = Math.max(0, fade - dt * 3); }
+  pressed = {}; ptr.tap = false;
+  requestAnimationFrame(frame);
+}
+go(new Title());
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
